@@ -6,11 +6,17 @@
       "compileCommands": "${config:idf.buildPath}/compile_commands.json",
       "intelliSenseMode": "gcc-x86",
       "includePath": [
-        "${workspaceFolder}/**"
+        "${workspaceFolder}/**",
+        "${workspaceFolder}/components/wifi",
+        "${workspaceFolder}/components/onenet_mqtt",
+        "${workspaceFolder}/components/sensor",
+        "${workspaceFolder}/main",
+        "D:/Espressif/frameworks/esp-idf-v4.4.3/components/**"
       ],
       "browse": {
         "path": [
-          "${workspaceFolder}"
+          "${workspaceFolder}",
+          "D:/Espressif/frameworks/esp-idf-v4.4.3/components"
         ],
         "limitSymbolsToIncludedHeaders": true
       }
