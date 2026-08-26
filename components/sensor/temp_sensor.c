@@ -1,6 +1,7 @@
 /* ESP-IDF 系统头文件 */
 #include "driver/temp_sensor.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 
 /* 项目头文件 */
 #include "temp_sensor.h"
@@ -18,7 +19,12 @@ void temp_sensor_init(void)
 float temp_sensor_read(void)
 {
     float temp = 0.0f;
+
+    /* 读取前先喂一次任务看门狗，避免读取过程阻塞时误触发 */
+    esp_task_wdt_reset();
+
     if (temp_sensor_read_celsius(&temp) == ESP_OK) {
+        esp_task_wdt_reset();
         return temp;
     }
     ESP_LOGE(TAG, "Failed to read temperature");

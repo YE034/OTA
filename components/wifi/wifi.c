@@ -64,5 +64,11 @@ void wifi_init_sta(const char *ssid, const char *password)
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wcfg));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    ESP_LOGI(TAG, "Wi-Fi STA init done, SSID: %s", ssid);
+    /* 关闭 Wi-Fi 省电模式（modem sleep）。
+     * 关键：ESP32-S3 在省电模式下，片上温度传感器读取会与 PHY/RTC 时钟
+     * 冲突，导致 temp_sensor_read_raw 自旋卡死 → 任务看门狗触发。
+     * 关闭省电后温度读取才能稳定工作。 */
+    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+
+    ESP_LOGI(TAG, "Wi-Fi STA init done, SSID: %s (PS disabled)", ssid);
 }

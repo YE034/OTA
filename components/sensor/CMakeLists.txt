@@ -1,5 +1,5 @@
 idf_component_register(
     SRCS "temp_sensor.c"
     INCLUDE_DIRS "."
-    REQUIRES driver log
+    REQUIRES driver log esp_system
 )
