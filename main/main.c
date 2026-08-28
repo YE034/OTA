@@ -13,10 +13,12 @@
 #include "nvs_flash.h"
 #include "driver/gpio.h"
 #include "driver/rmt.h"
+#include "esp_ota_ops.h"
 
 /* 项目头文件 */
 #include "wifi.h"
 #include "onenet_mqtt.h"
+#include "onenet_ota.h"
 #include "temp_sensor.h"
 #include "ws2812.h"
 
@@ -166,6 +168,8 @@ static void on_property_set(const onenet_property_t *prop)
 /* ================= 温度上报任务 ================= */
 static void report_task(void *pvParameters)
 {
+    bool version_reported = false;   /* OTA 版本号只需上报一次 */
+
     while (1) {
         /* 等待 Wi-Fi 连上 */
         xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT,
@@ -176,6 +180,14 @@ static void report_task(void *pvParameters)
             ESP_LOGW(TAG, "MQTT not connected yet, retry in 1s");
             vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
+        }
+
+        /* MQTT 首次连接成功后，上报固件版本号（供 OTA 平台判断是否需要升级） */
+        if (!version_reported) {
+            const esp_app_desc_t *desc = esp_ota_get_app_description();
+            ESP_LOGI(TAG, "Current firmware version: %s", desc->version);
+            onenet_ota_report_version();
+            version_reported = true;
         }
 
         /* 读温度 → 上报 */
@@ -212,6 +224,18 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    /* 标记当前固件为有效（OTA 升级后首次启动时，确认新固件运行正常，
+     * 防止因新固件异常导致无限回滚） */
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t ota_state;
+    if (esp_ota_get_state_partition(running, &ota_state) == ESP_OK) {
+        if (ota_state == ESP_OTA_IMG_PENDING_VERIFY) {
+            ESP_LOGI(TAG, "New firmware pending verify, marking valid...");
+            esp_ota_mark_app_valid_cancel_rollback();
+        }
+    }
+    ESP_LOGI(TAG, "Running partition: %s", running->label);
 
     /* 2. 初始化板载 WS2812 RGB 灯（上电先黄灯提示） */
     ws2812_init(WS2812_GPIO_PIN, WS2812_RMT_CH);

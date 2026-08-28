@@ -11,6 +11,7 @@
 
 /* 项目头文件 */
 #include "onenet_mqtt.h"
+#include "onenet_ota.h"
 
 static const char *TAG = "onenet_mqtt";
 
@@ -44,6 +45,60 @@ static bool is_property_set_topic(const char *topic, int topic_len)
         return false;
     }
     return (memcmp(topic + topic_len - slen, suffix, slen) == 0);
+}
+
+/* 判断收到的 topic 是否为「OTA升级通知」：$sys/{pid}/{dn}/ota/inform
+ * 同样必须用 topic_len + memcmp，不能用 strlen/strcmp */
+static bool is_ota_inform_topic(const char *topic, int topic_len)
+{
+    if (topic == NULL || topic_len <= 0) {
+        return false;
+    }
+    const char suffix[] = "/ota/inform";
+    size_t slen = sizeof(suffix) - 1;
+    if ((size_t)topic_len < slen) {
+        return false;
+    }
+    return (memcmp(topic + topic_len - slen, suffix, slen) == 0);
+}
+
+/* 处理云端 OTA 升级通知：回复 inform_reply，然后触发 OTA 任务 */
+static void handle_ota_inform(esp_mqtt_event_handle_t event)
+{
+    char *data = malloc(event->data_len + 1);
+    if (data == NULL) {
+        ESP_LOGE(TAG, "OOM handling OTA inform");
+        return;
+    }
+    memcpy(data, event->data, event->data_len);
+    data[event->data_len] = '\0';
+    ESP_LOGI(TAG, "OTA inform received: %s", data);
+
+    /* 解析通知中的 id（用于回复） */
+    const char *req_id = "0";
+    cJSON *root = cJSON_Parse(data);
+    if (root) {
+        cJSON *id_item = cJSON_GetObjectItem(root, "id");
+        if (cJSON_IsString(id_item) && id_item->valuestring) {
+            req_id = id_item->valuestring;
+        }
+    }
+
+    /* 回复 ota/inform_reply */
+    char reply_topic[160];
+    snprintf(reply_topic, sizeof(reply_topic),
+             "$sys/%s/%s/ota/inform_reply", s_product_id, s_device_name);
+    char reply[128];
+    snprintf(reply, sizeof(reply),
+             "{\"id\":\"%s\",\"code\":200,\"message\":\"ready\"}", req_id);
+    esp_mqtt_client_publish(s_client, reply_topic, reply, 0, 1, 0);
+    ESP_LOGI(TAG, "Sent OTA inform reply: %s", reply);
+
+    if (root) cJSON_Delete(root);
+    free(data);
+
+    /* 触发 OTA 升级流程（内部创建独立任务） */
+    onenet_ota_start();
 }
 
 /* 处理云端下发的属性设置指令 */
@@ -131,7 +186,12 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
                 snprintf(topic, sizeof(topic),
                          "$sys/%s/%s/thing/property/set",
                          s_product_id, s_device_name);
-                esp_mqtt_client_subscribe(s_client, topic, 0);
+                esp_mqtt_client_subscribe(s_client, topic, 1);
+                /* 订阅 OTA 升级通知 */
+                snprintf(topic, sizeof(topic),
+                         "$sys/%s/%s/ota/inform",
+                         s_product_id, s_device_name);
+                esp_mqtt_client_subscribe(s_client, topic, 1);
             }
             break;
         case MQTT_EVENT_DISCONNECTED:
@@ -139,8 +199,10 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
             ESP_LOGW(TAG, "MQTT disconnected, will auto-reconnect");
             break;
         case MQTT_EVENT_DATA:
-            /* 区分：属性设置下行 vs 其他回复 */
-            if (is_property_set_topic(event->topic, event->topic_len)) {
+            /* 区分：OTA通知 / 属性设置下行 / 其他回复 */
+            if (is_ota_inform_topic(event->topic, event->topic_len)) {
+                handle_ota_inform(event);
+            } else if (is_property_set_topic(event->topic, event->topic_len)) {
                 handle_property_set(event);
             } else {
                 ESP_LOGI(TAG, "Reply topic: %.*s", event->topic_len, event->topic);
@@ -159,6 +221,9 @@ void onenet_mqtt_start(const char *product_id, const char *device_name, const ch
 {
     strncpy(s_product_id, product_id, sizeof(s_product_id) - 1);
     strncpy(s_device_name, device_name, sizeof(s_device_name) - 1);
+
+    /* 初始化 OTA 组件（传入产品ID/设备名/token 用于 HTTP API 鉴权） */
+    onenet_ota_init(product_id, device_name, token);
 
     /* OneNET CMIoT 新版平台：{product_id}.mqtts.acc.cmcconenet.cn
      * 注意域名是 cmcc+onenet = cmcconenet，不是 cmccconet！

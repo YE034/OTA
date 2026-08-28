@@ -1,8 +1,9 @@
-# For more information about build system see
+# For more information on build system see
 # https://docs.espressif.com/projects/esp-idf/en/latest/api-guides/build-system.html
-# The following five lines of boilerplate have to be in your project's
-# CMakeLists in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.5)
+
+# 固件版本号（OTA 升级时平台据此判断是否需要升级）
+set(PROJECT_VER "1.0.1")
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(sample_project)
