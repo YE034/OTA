@@ -14,6 +14,7 @@
 #include "driver/gpio.h"
 #include "driver/rmt.h"
 #include "esp_ota_ops.h"
+#include "esp_wifi.h"
 
 /* 项目头文件 */
 #include "wifi.h"
@@ -190,6 +191,13 @@ static void report_task(void *pvParameters)
             version_reported = true;
         }
 
+        /* OTA 下载/刷写期间暂停温度上报，避免与固件下载争抢网络和内存 */
+        if (onenet_ota_is_running()) {
+            ESP_LOGI(TAG, "OTA in progress, skip temperature report this round");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
+
         /* 读温度 → 上报 */
         float temp = temp_sensor_read();
         if (temp < 0) {
@@ -207,6 +215,18 @@ static void report_task(void *pvParameters)
 
         vTaskDelay(pdMS_TO_TICKS(REPORT_INTERVAL_MS));
     }
+}
+
+/* ================= OTA 升级成功后的预重启回调 =================
+ * 作用：esp_restart() 前先优雅关闭 MQTT 和 WiFi，
+ *       避免系统强制重启掐断 TCP 连接时打印 error 113/119 红色日志 */
+static void pre_reboot_handler(void)
+{
+    ESP_LOGI(TAG, "Shutting down MQTT/Wi-Fi gracefully before reboot...");
+    onenet_mqtt_stop();          /* 停止 MQTT 客户端、断开 TCP */
+    esp_wifi_disconnect();       /* 断开与路由器的关联 */
+    esp_wifi_stop();             /* 关闭 WiFi 协议栈 */
+    vTaskDelay(pdMS_TO_TICKS(300));   /* 等待协议栈完成清理 */
 }
 
 void app_main(void)
@@ -252,10 +272,13 @@ void app_main(void)
     xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT,
                         pdFALSE, pdTRUE, portMAX_DELAY);
     ESP_LOGI(TAG, "Wi-Fi connected, starting MQTT...");
-    ws2812_set_color(0, 0, 255);    /* 联网成功：蓝灯 */
+    ws2812_set_color(255, 0, 255);    /* 联网成功：紫灯 */
 
     /* 注册云端下行回调（控制 RGB 灯） */
     onenet_mqtt_register_property_cb(on_property_set);
+
+    /* 注册 OTA 预重启回调：升级成功重启前优雅关闭网络 */
+    onenet_ota_set_pre_reboot_cb(pre_reboot_handler);
 
     onenet_mqtt_start(ONENET_PRODUCT_ID, ONENET_DEVICE_NAME, ONENET_TOKEN);
 

@@ -26,6 +26,11 @@ typedef void (*onenet_property_set_cb_t)(const onenet_property_t *prop);
 void onenet_mqtt_start(const char *product_id, const char *device_name, const char *token);
 
 /**
+ * @brief 优雅停止 MQTT 客户端（OTA 重启前调用，避免强制掐断 TCP 产生错误日志）
+ */
+void onenet_mqtt_stop(void);
+
+/**
  * @brief 上报温度属性到 OneNET 物模型
  */
 bool onenet_mqtt_report_temp(const char *product_id, const char *device_name,

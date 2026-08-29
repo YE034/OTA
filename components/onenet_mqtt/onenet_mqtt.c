@@ -18,6 +18,8 @@ static const char *TAG = "onenet_mqtt";
 bool s_mqtt_connected = false;
 static esp_mqtt_client_handle_t s_client = NULL;
 static int s_msg_id_counter = 0;
+/* 主动停止标志：为 true 时断开不再打印"自动重连"警告（用于 OTA 重启前） */
+static volatile bool s_manual_stop = false;
 
 /* 缓存 product_id / device_name，事件回调中拼接 topic 用 */
 static char s_product_id[64] = {0};
@@ -196,7 +198,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base,
             break;
         case MQTT_EVENT_DISCONNECTED:
             s_mqtt_connected = false;
-            ESP_LOGW(TAG, "MQTT disconnected, will auto-reconnect");
+            if (!s_manual_stop) {
+                ESP_LOGW(TAG, "MQTT disconnected, will auto-reconnect");
+            }
             break;
         case MQTT_EVENT_DATA:
             /* 区分：OTA通知 / 属性设置下行 / 其他回复 */
@@ -244,7 +248,20 @@ void onenet_mqtt_start(const char *product_id, const char *device_name, const ch
     s_client = esp_mqtt_client_init(&cfg);
     esp_mqtt_client_register_event(s_client, MQTT_EVENT_ANY, mqtt_event_handler, NULL);
     esp_mqtt_client_start(s_client);
+    s_manual_stop = false;
     ESP_LOGI(TAG, "MQTT client starting, broker: %s:1883", uri);
+}
+
+void onenet_mqtt_stop(void)
+{
+    s_manual_stop = true;
+    s_mqtt_connected = false;
+    if (s_client != NULL) {
+        ESP_LOGI(TAG, "Stopping MQTT client gracefully...");
+        esp_mqtt_client_stop(s_client);      /* 先停止内部任务、断开 TCP */
+        esp_mqtt_client_destroy(s_client);   /* 释放资源 */
+        s_client = NULL;
+    }
 }
 
 bool onenet_mqtt_report_temp(const char *product_id, const char *device_name,
