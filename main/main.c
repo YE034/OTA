@@ -22,12 +22,13 @@
 #include "onenet_ota.h"
 #include "temp_sensor.h"
 #include "ws2812.h"
+#include "ble_manager.h"
 
 static const char *TAG = "main";
 
 /* ================= 用户配置区 ================= */
-#define WIFI_SSID           "led"
-#define WIFI_PASS           "12345678"
+/* Wi-Fi 凭证不再硬编码：首次用 nRF Connect 写 WIFI:ssid,password 配网并存入 NVS，以后开机自动连接。
+ * 若想恢复出厂（清除已保存的 WiFi），可执行 idf.py erase-flash 或重新下发。 */
 
 /* 产品ID：OneNET 控制台显示的产品ID（注意区分大写 I 和小写 L） */
 #define ONENET_PRODUCT_ID   "FIuz5CTnNf"
@@ -166,6 +167,34 @@ static void on_property_set(const onenet_property_t *prop)
     }
 }
 
+/* ========== 手机 BLE 直连命令回调 ==========
+ * nRF Connect 等 App 往命令特征写字符串：
+ *   "ON"/"OFF"         → 开关灯
+ *   "RED"/"#FF0000"…   → 变色（自动开灯，写入即生效）
+ * 内部统一转成物模型属性，复用 on_property_set，与云端控制走同一套逻辑。 */
+static void on_ble_command(const char *cmd)
+{
+    if (cmd == NULL || cmd[0] == '\0') {
+        return;
+    }
+
+    if (strcasecmp(cmd, "ON") == 0) {
+        onenet_property_t p = { .identifier = PROPERTY_SWITCH, .is_string = false, .value = 1.0 };
+        on_property_set(&p);
+    }
+    else if (strcasecmp(cmd, "OFF") == 0) {
+        onenet_property_t p = { .identifier = PROPERTY_SWITCH, .is_string = false, .value = 0.0 };
+        on_property_set(&p);
+    }
+    else {
+        /* 颜色命令：先开灯再设色，保证手机一写就能看到颜色 */
+        onenet_property_t sw = { .identifier = PROPERTY_SWITCH, .is_string = false, .value = 1.0 };
+        on_property_set(&sw);
+        onenet_property_t cl = { .identifier = PROPERTY_COLOR, .is_string = true, .str_value = cmd };
+        on_property_set(&cl);
+    }
+}
+
 /* ================= 温度上报任务 ================= */
 static void report_task(void *pvParameters)
 {
@@ -204,6 +233,8 @@ static void report_task(void *pvParameters)
             ESP_LOGE(TAG, "Invalid temperature, skip");
         } else {
             ESP_LOGI(TAG, "Chip internal temp: %.1f C", temp);
+            /* 同步给 BLE：手机直连可读 / 订阅后自动推送 */
+            ble_manager_set_temperature(temp);
             bool ok = onenet_mqtt_report_temp(
                 ONENET_PRODUCT_ID, ONENET_DEVICE_NAME, PROPERTY_TEMP, temp);
             if (ok) {
@@ -264,8 +295,20 @@ void app_main(void)
     /* 2.5 初始化内部温度传感器（一次即可，避免任务内重复初始化） */
     temp_sensor_init();
 
-    /* 3. Wi-Fi 初始化（STA 模式） */
-    wifi_init_sta(WIFI_SSID, WIFI_PASS);
+    /* 3. Wi-Fi 初始化：自动从 NVS 读取已保存凭证；没有则进入 BLE 配网等待 */
+    bool saved_wifi = wifi_config_has_saved();
+    wifi_init_sta();
+
+    /* 3.5 启动 BLE（nRF Connect 配网 + 直连看温度/控灯），配网后也持续运行 */
+    ble_manager_register_command_cb(on_ble_command);
+    ble_manager_init("ESP32S3-IoT");
+    if (!saved_wifi) {
+        ESP_LOGW(TAG, "########################################################");
+        ESP_LOGW(TAG, "# No saved Wi-Fi! Use nRF Connect, write to 0xE002: WIFI:ssid,password #");
+        ESP_LOGW(TAG, "# BLE device name: ESP32S3-IoT                          #");
+        ESP_LOGW(TAG, "########################################################");
+        ws2812_set_color(0, 128, 255);   /* 青色：等待蓝牙配网 */
+    }
 
     /* 4. 等待 Wi-Fi 连上后启动 MQTT */
     ESP_LOGI(TAG, "Waiting for Wi-Fi connection...");
